@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job Hunt Report — {{ generated_at }}</title>
+<style>
+  :root {
+    --bg: #0f1117; --card: #1a1d27; --border: #2a2d3e;
+    --accent: #7c6af7; --green: #22c55e; --yellow: #f59e0b; --red: #ef4444;
+    --text: #e2e8f0; --muted: #94a3b8;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: system-ui, sans-serif;
+         font-size: 14px; line-height: 1.6; }
+  header { background: var(--card); border-bottom: 1px solid var(--border);
+           padding: 24px 32px; display: flex; justify-content: space-between;
+           align-items: center; flex-wrap: wrap; gap: 12px; }
+  header h1 { font-size: 22px; font-weight: 700; color: var(--accent); }
+  .stats { display: flex; gap: 24px; flex-wrap: wrap; }
+  .stat { text-align: center; }
+  .stat .n { font-size: 28px; font-weight: 700; color: var(--accent); }
+  .stat .l { color: var(--muted); font-size: 12px; text-transform: uppercase; }
+  .controls { padding: 16px 32px; display: flex; gap: 12px; flex-wrap: wrap;
+              align-items: center; }
+  .controls label { color: var(--muted); font-size: 12px; }
+  select, input[type=range] { background: var(--card); border: 1px solid var(--border);
+    color: var(--text); border-radius: 6px; padding: 4px 8px; }
+  .score-val { font-weight: 700; color: var(--accent); min-width: 28px; }
+  main { padding: 0 32px 48px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+          gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+          padding: 20px; display: flex; flex-direction: column; gap: 10px;
+          transition: border-color .2s; }
+  .card:hover { border-color: var(--accent); }
+  .card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+  .badge { border-radius: 999px; padding: 2px 10px; font-size: 11px; font-weight: 700; }
+  .badge-strong  { background: #166534; color: #86efac; }
+  .badge-good    { background: #1e3a5f; color: #93c5fd; }
+  .badge-weak    { background: #451a03; color: #fed7aa; }
+  .badge-irrelevant { background: #1f2937; color: var(--muted); }
+  .score-circle { width: 48px; height: 48px; border-radius: 50%; flex-shrink: 0;
+                  display: flex; align-items: center; justify-content: center;
+                  font-size: 15px; font-weight: 800; }
+  .sc-high   { background: #14532d; color: #86efac; }
+  .sc-mid    { background: #1e3a5f; color: #93c5fd; }
+  .sc-low    { background: #451a03; color: #fbbf24; }
+  .sc-none   { background: #1f2937; color: var(--muted); }
+  h3.title { font-size: 15px; font-weight: 600; }
+  .meta { color: var(--muted); font-size: 12px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .meta span::before { content: "• "; }
+  .meta span:first-child::before { content: ""; }
+  .salary { color: var(--green); font-size: 13px; font-weight: 600; }
+  .highlights li { list-style: none; padding-left: 16px; position: relative; }
+  .highlights li::before { content: "✓"; position: absolute; left: 0;
+                            color: var(--green); font-weight: 700; }
+  .concerns li { list-style: none; padding-left: 16px; position: relative; }
+  .concerns li::before { content: "!"; position: absolute; left: 0;
+                          color: var(--yellow); font-weight: 700; }
+  .section-label { font-size: 11px; text-transform: uppercase; color: var(--muted);
+                   font-weight: 600; margin-bottom: 4px; }
+  a.btn { display: inline-block; background: var(--accent); color: #fff;
+          text-decoration: none; border-radius: 6px; padding: 6px 14px;
+          font-size: 13px; font-weight: 600; margin-top: 4px; }
+  a.btn:hover { opacity: .85; }
+  .platform-tag { font-size: 10px; text-transform: uppercase; color: var(--muted);
+                  background: var(--border); border-radius: 4px; padding: 1px 6px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Job Hunt Report</h1>
+    <p style="color:var(--muted);font-size:12px">Generated {{ generated_at }} · for {{ candidate_name }}</p>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="n">{{ total_jobs }}</div><div class="l">Total Jobs</div></div>
+    <div class="stat"><div class="n">{{ strong_count }}</div><div class="l">Strong Matches</div></div>
+    <div class="stat"><div class="n">{{ good_count }}</div><div class="l">Good Matches</div></div>
+    {% for plat, n in by_platform.items() %}
+    <div class="stat"><div class="n">{{ n }}</div><div class="l">{{ plat }}</div></div>
+    {% endfor %}
+  </div>
+</header>
+
+<div class="controls">
+  <label>Min score:
+    <input type="range" id="minScore" min="0" max="100" value="{{ min_score }}"
+           oninput="filterCards()" style="width:120px">
+  </label>
+  <span class="score-val" id="scoreVal">{{ min_score }}</span>
+  <label>Platform:
+    <select id="platFilter" onchange="filterCards()">
+      <option value="">All</option>
+      {% for plat in by_platform %}
+      <option value="{{ plat }}">{{ plat }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Verdict:
+    <select id="verdictFilter" onchange="filterCards()">
+      <option value="">All</option>
+      <option value="Strong Match">Strong Match</option>
+      <option value="Good Match">Good Match</option>
+      <option value="Weak Match">Weak Match</option>
+    </select>
+  </label>
+</div>
+
+<main>
+  <div class="grid" id="jobGrid">
+  {% for job in jobs %}
+  {% set sd = job.score_data_obj %}
+  {% set verdict = sd.get('verdict','') if sd else '' %}
+  {% set bclass = 'badge-strong' if 'Strong' in verdict else ('badge-good' if 'Good' in verdict else ('badge-weak' if 'Weak' in verdict else 'badge-irrelevant')) %}
+  {% set sclass = 'sc-high' if job.score >= 75 else ('sc-mid' if job.score >= 50 else ('sc-low' if job.score >= 25 else 'sc-none')) %}
+  <div class="card"
+       data-score="{{ job.score or 0 }}"
+       data-platform="{{ job.platform }}"
+       data-verdict="{{ verdict }}">
+    <div class="card-top">
+      <div style="flex:1">
+        <h3 class="title">{{ job.title }}</h3>
+        <div class="meta">
+          <span>{{ job.company }}</span>
+          {% if job.location %}<span>{{ job.location }}</span>{% endif %}
+          <span class="platform-tag">{{ job.platform }}</span>
+        </div>
+        {% if job.salary %}<div class="salary">{{ job.salary }}</div>{% endif %}
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px">
+        <div class="score-circle {{ sclass }}">{{ job.score or '–' }}</div>
+        {% if verdict %}<span class="badge {{ bclass }}">{{ verdict }}</span>{% endif %}
+      </div>
+    </div>
+
+    {% if sd and sd.get('highlights') %}
+    <div>
+      <div class="section-label">Why it fits</div>
+      <ul class="highlights">
+        {% for h in sd['highlights'] %}<li>{{ h }}</li>{% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    {% if sd and sd.get('concerns') %}
+    <div>
+      <div class="section-label">Watch out</div>
+      <ul class="concerns">
+        {% for c in sd['concerns'] %}<li>{{ c }}</li>{% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    {% if job.url %}
+    <a class="btn" href="{{ job.url }}" target="_blank" rel="noopener">Apply →</a>
+    {% endif %}
+  </div>
+  {% endfor %}
+  </div>
+</main>
+
+<script>
+function filterCards() {
+  const minS    = +document.getElementById('minScore').value;
+  const plat    = document.getElementById('platFilter').value;
+  const verdict = document.getElementById('verdictFilter').value;
+  document.getElementById('scoreVal').textContent = minS;
+
+  document.querySelectorAll('#jobGrid .card').forEach(card => {
+    const score  = +card.dataset.score;
+    const cplat  = card.dataset.platform;
+    const cverd  = card.dataset.verdict;
+    const hide   = score < minS
+                || (plat    && cplat !== plat)
+                || (verdict && cverd !== verdict);
+    card.classList.toggle('hidden', hide);
+  });
+}
+</script>
+</body>
+</html>
