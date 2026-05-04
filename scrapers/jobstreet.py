@@ -15,12 +15,39 @@ from .base import BaseScraper
 
 BASE_URL = "https://www.jobstreet.com.sg"
 
-# JobStreet (SEEK) uses data-automation attributes — very stable across redesigns
-_SEL_CARD    = "article[data-job-id], article[data-testid='job-card'], [data-automation='job-card']"
-_SEL_TITLE   = "[data-automation='job-title'], [data-testid='job-title'], h1, h2, h3"
-_SEL_COMPANY = "[data-automation='job-company-name'], [data-testid='company-name'], [class*='company']"
-_SEL_LOC     = "[data-automation='job-card-location'], [data-testid='job-location'], [class*='location']"
-_SEL_SALARY  = "[data-automation='job-card-salary'], [data-testid='salary'], [class*='salary']"
+# SEEK/JobStreet data-automation attributes (stable across redesigns)
+# Listed most-specific first so the first DOM match is the right one
+_SEL_CARD = (
+    "[data-automation='job-card'], "
+    "article[data-job-id], "
+    "article[data-testid='job-card'], "
+    "[data-testid='job-card'], "
+    "[class*='JobCard'], "
+    "article"
+)
+_SEL_TITLE   = (
+    "[data-automation='job-title'], "
+    "[data-testid='job-title'], "
+    "h1[class*='title'], h2[class*='title'], h3[class*='title'], "
+    "a[data-automation='jobcard-link']"
+)
+_SEL_COMPANY = (
+    "[data-automation='job-company-name'], "
+    "[data-automation='advertiser-name'], "
+    "[data-testid='company-name'], "
+    "span[class*='company'], span[class*='Company']"
+)
+_SEL_LOC = (
+    "[data-automation='job-card-location'], "
+    "[data-testid='job-location'], "
+    "span[class*='location'], span[class*='Location']"
+)
+_SEL_SALARY = (
+    "[data-automation='job-salary'], "
+    "[data-automation='job-card-salary'], "
+    "[data-testid='salary'], "
+    "span[class*='salary'], span[class*='Salary']"
+)
 
 _OTP_SIGNALS = [
     "input[name='otp']",
@@ -162,30 +189,40 @@ class JobStreetScraper(BaseScraper):
     # ── Scraping ──────────────────────────────────────────────────────────────
 
     def _scrape_page(self, page, keyword: str, location: str, pg: int) -> list[dict]:
-        # Use the standard JobStreet /jobs search endpoint
+        # JobStreet SG (SEEK) search URL — sortMode=ListedDate shows newest first
         url = (
             f"{BASE_URL}/jobs"
             f"?q={quote(keyword)}"
             f"&l={quote(location)}"
             f"&pg={pg}"
-            f"&sortmode=ListedDate"
+            f"&sortMode=ListedDate"
         )
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(2500)  # let React render
+            # Wait for any job card selector to appear
+            try:
+                page.wait_for_selector(_SEL_CARD, timeout=12000)
+            except PWTimeout:
+                # Page may still be rendering — give it more time
+                page.wait_for_timeout(5000)
+            # Scroll down to trigger any lazy-loaded cards
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
+            page.wait_for_timeout(1500)
         except PWTimeout:
             print(f"[JobStreet] page load timeout '{keyword}' pg {pg}")
             return []
 
-        # Try Next.js data first (fastest, most structured)
+        # Dump current URL so we can debug redirects
+        print(f"[JobStreet] landed on: {page.url[:80]}")
+
+        # Try __NEXT_DATA__ first (structured JSON, most reliable)
         results = self._from_next_data(page)
         if results:
             print(f"[JobStreet] '{keyword}' pg {pg}: {len(results)} via __NEXT_DATA__")
             return results
 
-        # Fall back to DOM card parsing
-        dom = self._parse_dom(page, keyword, pg)
-        return dom
+        # Fall back to DOM card scraping
+        return self._parse_dom(page, keyword, pg)
 
     def _from_next_data(self, page) -> list[dict]:
         try:
