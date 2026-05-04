@@ -112,13 +112,10 @@ def run_scraper(name: str, pages: int) -> list[dict]:
 def main() -> None:
     args = build_parser().parse_args()
 
-    # Verify API key when scoring
+    # Auto-disable scoring if no API key rather than crashing
     if not args.no_score and not os.getenv("ANTHROPIC_API_KEY"):
-        console.print(
-            "[red]ANTHROPIC_API_KEY not set.[/red] "
-            "Add it to .env or run with --no-score to skip scoring."
-        )
-        sys.exit(1)
+        console.print("[yellow]ANTHROPIC_API_KEY not set — running without scoring.[/yellow]")
+        args.no_score = True
 
     database.init_db()
 
@@ -127,13 +124,25 @@ def main() -> None:
     if not args.report_only:
         platforms = select_platforms(args.platform)
         console.rule("[bold]Scraping Jobs")
+
+        if args.notify:
+            notifier._send(
+                f"🚀 <b>Job hunt started</b>\n"
+                f"Platforms: {', '.join(platforms)}\n"
+                f"Keywords: {len(config.SEARCH_KEYWORDS)} | Pages: {args.pages}"
+            )
+
         for name in platforms:
+            if args.notify:
+                notifier._send(f"🔄 Scraping <b>{name}</b>…")
             jobs = run_scraper(name, args.pages)
             all_raw.extend(jobs)
+            if args.notify:
+                icon = "✅" if jobs else "⚠️"
+                notifier._send(f"{icon} <b>{name}</b>: {len(jobs)} jobs found")
 
         console.print(f"\n[bold]Total scraped:[/bold] {len(all_raw)} jobs")
 
-        # Persist all raw jobs first (score=None)
         new_count = 0
         for job in all_raw:
             if database.upsert_job(job):
@@ -146,6 +155,8 @@ def main() -> None:
         if unscored:
             console.rule("[bold]Scoring with Claude AI")
             console.print(f"  Scoring {len(unscored)} jobs against your resume…")
+            if args.notify:
+                notifier._send(f"🤖 Scoring {len(unscored)} jobs with Claude AI…")
 
             with Progress(
                 SpinnerColumn(),
@@ -172,9 +183,10 @@ def main() -> None:
 
     # ── REPORT ────────────────────────────────────────────────────────────────
     console.rule("[bold]Generating Report")
-    jobs_for_report = database.get_jobs(min_score=args.min_score if not args.no_score else 0)
+    min_score_filter = args.min_score if not args.no_score else 0
+    jobs_for_report  = database.get_jobs(min_score=min_score_filter)
 
-    html_path = reporter.generate_html(jobs_for_report, config.RESUME, args.min_score)
+    html_path = reporter.generate_html(jobs_for_report, config.RESUME, min_score_filter)
     console.print(f"  [green]HTML report:[/green] {html_path}")
 
     if args.csv:
@@ -196,7 +208,7 @@ def main() -> None:
     if top_jobs:
         console.print("\n[bold yellow]Top 5 matches:[/bold yellow]")
         for j in top_jobs:
-            sd = j.get("score_data_obj") or {}
+            sd      = j.get("score_data_obj") or {}
             verdict = sd.get("verdict", "") if isinstance(sd, dict) else ""
             console.print(
                 f"  [green]{j['score']:>3}[/green]  "
