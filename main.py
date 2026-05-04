@@ -9,6 +9,7 @@ Usage:
     python main.py --min-score 70            # only report jobs scoring 70+
     python main.py --csv                     # also export CSV
     python main.py --pages 10               # scrape 10 pages per keyword/platform
+    python main.py --notify                  # send Telegram notification when done
 """
 
 import argparse
@@ -28,6 +29,7 @@ load_dotenv()
 import config
 import database
 import matcher
+import notifier
 import reporter
 from scrapers import (
     MyCareersFutureScraper,
@@ -66,6 +68,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Also export a CSV report")
     p.add_argument("--report-only", action="store_true",
                    help="Skip scraping; generate report from existing DB")
+    p.add_argument("--notify", action="store_true",
+                   help="Send Telegram notification with top matches when done")
     return p
 
 
@@ -202,6 +206,12 @@ def main() -> None:
             )
 
     console.print(f"\n[bold green]Done.[/bold green] Open {html_path} in your browser.")
+
+    # ── TELEGRAM NOTIFICATION ─────────────────────────────────────────────────
+    if args.notify:
+        console.rule("[bold]Sending Telegram Notification")
+        notifier.notify(jobs_for_report, st, report_path=str(html_path))
+        console.print("  [green]✓[/green] Telegram notification sent")
 
 
 if __name__ == "__main__":

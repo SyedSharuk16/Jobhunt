@@ -1,0 +1,82 @@
+name: Daily Job Hunt 🎯
+
+on:
+  # Runs every day at 8:00 AM Singapore time (00:00 UTC)
+  schedule:
+    - cron: '0 0 * * *'
+
+  # Also lets you trigger it manually from GitHub → Actions tab
+  workflow_dispatch:
+    inputs:
+      min_score:
+        description: 'Minimum match score (0-100)'
+        required: false
+        default: '60'
+      pages:
+        description: 'Pages to scrape per keyword'
+        required: false
+        default: '5'
+
+jobs:
+  hunt:
+    name: Scrape → Score → Notify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      # ── 1. Checkout ─────────────────────────────────────────────────────────
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      # ── 2. Python ───────────────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ── 3. Dependencies ─────────────────────────────────────────────────────
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright & Chromium
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      # ── 4. Run the bot ──────────────────────────────────────────────────────
+      - name: Run job hunt
+        env:
+          # Claude AI (required for scoring)
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+          # Job portals — add via GitHub repo → Settings → Secrets
+          JOBSTREET_EMAIL:    ${{ secrets.JOBSTREET_EMAIL }}
+          JOBSTREET_PASSWORD: ${{ secrets.JOBSTREET_PASSWORD }}
+          LINKEDIN_EMAIL:     ${{ secrets.LINKEDIN_EMAIL }}
+          LINKEDIN_PASSWORD:  ${{ secrets.LINKEDIN_PASSWORD }}
+
+          # Telegram (required for phone notifications)
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+
+          # Scraper settings
+          HEADLESS:     'true'
+          SCRAPE_PAGES: ${{ github.event.inputs.pages || '5' }}
+          MIN_SCORE:    ${{ github.event.inputs.min_score || '60' }}
+
+        run: |
+          python main.py \
+            --notify \
+            --pages ${{ github.event.inputs.pages || '5' }} \
+            --min-score ${{ github.event.inputs.min_score || '60' }} \
+            --csv
+
+      # ── 5. Upload report as artifact (viewable in GitHub Actions) ──────────
+      - name: Upload HTML & CSV report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-report-${{ github.run_id }}
+          path: reports/
+          retention-days: 7

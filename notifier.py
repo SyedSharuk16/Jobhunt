@@ -1,0 +1,148 @@
+"""
+Telegram notifier — sends daily job match summary to your phone.
+
+Setup (one time):
+  1. Open Telegram → search @BotFather → send /newbot → follow prompts → copy token
+  2. Start a chat with your new bot (just send /start)
+  3. Visit https://api.telegram.org/bot<TOKEN>/getUpdates to get your chat_id
+  4. Add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to GitHub Secrets / .env
+"""
+
+import json
+import os
+import requests
+
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
+
+API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+
+def _post(method: str, payload: dict) -> bool:
+    if not BOT_TOKEN or not CHAT_ID:
+        print("[Telegram] token or chat_id not set — skipping notification")
+        return False
+    try:
+        r = requests.post(f"{API}/{method}", json=payload, timeout=15)
+        r.raise_for_status()
+        return True
+    except Exception as exc:
+        print(f"[Telegram] {method} failed: {exc}")
+        return False
+
+
+def _send(text: str, parse_mode: str = "HTML") -> bool:
+    return _post("sendMessage", {
+        "chat_id":    CHAT_ID,
+        "text":       text,
+        "parse_mode": parse_mode,
+        "disable_web_page_preview": True,
+    })
+
+
+def _send_document(path: str, caption: str = "") -> bool:
+    if not BOT_TOKEN or not CHAT_ID:
+        return False
+    try:
+        with open(path, "rb") as f:
+            r = requests.post(
+                f"{API}/sendDocument",
+                data={"chat_id": CHAT_ID, "caption": caption},
+                files={"document": f},
+                timeout=60,
+            )
+        r.raise_for_status()
+        return True
+    except Exception as exc:
+        print(f"[Telegram] sendDocument failed: {exc}")
+        return False
+
+
+# ── Platform display names ────────────────────────────────────────────────────
+_PLAT_LABEL = {
+    "mycareers_future": "MyCareersFuture",
+    "jobstreet":        "JobStreet",
+    "linkedin":         "LinkedIn",
+    "indeed":           "Indeed SG",
+}
+
+_VERDICT_EMOJI = {
+    "Strong Match": "🟢",
+    "Good Match":   "🔵",
+    "Weak Match":   "🟡",
+    "Not Relevant": "⚫",
+}
+
+
+def notify(jobs: list[dict], stats: dict, report_path: str | None = None) -> None:
+    """
+    Send the daily digest to Telegram.
+    - One header message with overall stats
+    - Up to 10 individual job cards (strong + good matches first)
+    - Optional: HTML report as a document
+    """
+    if not jobs:
+        _send("🔍 <b>Daily Job Hunt</b>\n\nNo new jobs found today that meet your score threshold.")
+        return
+
+    strong = [j for j in jobs if isinstance(j.get("score_data_obj"), dict)
+              and "Strong" in j["score_data_obj"].get("verdict", "")]
+    good   = [j for j in jobs if isinstance(j.get("score_data_obj"), dict)
+              and j["score_data_obj"].get("verdict") == "Good Match"]
+
+    by_plat = stats.get("by_platform", {})
+    plat_lines = "\n".join(
+        f"  • {_PLAT_LABEL.get(p, p)}: {n}"
+        for p, n in by_plat.items()
+    )
+
+    header = (
+        f"🎯 <b>Daily Job Hunt — Singapore</b>\n\n"
+        f"<b>Jobs scraped today:</b> {stats.get('total', len(jobs))}\n"
+        f"{plat_lines}\n\n"
+        f"🟢 Strong matches: {len(strong)}\n"
+        f"🔵 Good matches:   {len(good)}\n\n"
+        f"<i>Top matches below ↓</i>"
+    )
+    _send(header)
+
+    # Send top 10 jobs (strong first, then good, then rest by score)
+    top = sorted(jobs, key=lambda j: j.get("score") or 0, reverse=True)[:10]
+
+    for job in top:
+        sd      = job.get("score_data_obj") or {}
+        verdict = sd.get("verdict", "") if isinstance(sd, dict) else ""
+        emoji   = _VERDICT_EMOJI.get(verdict, "⚪")
+        score   = job.get("score") or 0
+        salary  = f"\n💰 {job['salary']}" if job.get("salary") else ""
+
+        highlights = sd.get("highlights", []) if isinstance(sd, dict) else []
+        hl_text    = ""
+        if highlights:
+            hl_text = "\n✅ " + "\n✅ ".join(highlights[:2])
+
+        concerns = sd.get("concerns", []) if isinstance(sd, dict) else []
+        co_text  = ""
+        if concerns:
+            co_text = "\n⚠️ " + concerns[0]
+
+        apply_btn = f'\n\n👉 <a href="{job["url"]}">Apply now</a>' if job.get("url") else ""
+
+        card = (
+            f"{emoji} <b>{job['title']}</b>\n"
+            f"🏢 {job.get('company', 'Unknown')}\n"
+            f"📍 {job.get('location', 'Singapore')}\n"
+            f"⭐ Score: {score}/100  |  {verdict}"
+            f"{salary}"
+            f"{hl_text}"
+            f"{co_text}"
+            f"{apply_btn}"
+        )
+        _send(card)
+
+    # Attach the full HTML report so they can browse all jobs in mobile browser
+    if report_path and os.path.exists(report_path):
+        _send_document(
+            report_path,
+            caption=f"📄 Full report — {len(jobs)} jobs. Open in browser to filter."
+        )
