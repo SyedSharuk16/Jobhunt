@@ -50,11 +50,8 @@ jobs:
           # Claude AI (required for scoring)
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
-          # Job portals — add via GitHub repo → Settings → Secrets
-          JOBSTREET_EMAIL:    ${{ secrets.JOBSTREET_EMAIL }}
-          JOBSTREET_PASSWORD: ${{ secrets.JOBSTREET_PASSWORD }}
-          LINKEDIN_EMAIL:     ${{ secrets.LINKEDIN_EMAIL }}
-          LINKEDIN_PASSWORD:  ${{ secrets.LINKEDIN_PASSWORD }}
+          # JobStreet uses email-OTP only (no password needed)
+          JOBSTREET_EMAIL: ${{ secrets.JOBSTREET_EMAIL }}
 
           # Telegram (required for phone notifications)
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

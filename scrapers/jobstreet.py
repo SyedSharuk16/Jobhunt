@@ -72,7 +72,6 @@ class JobStreetScraper(BaseScraper):
 
     def __init__(self):
         self._email    = os.getenv("JOBSTREET_EMAIL", "")
-        self._password = os.getenv("JOBSTREET_PASSWORD", "")
         self._headless = os.getenv("HEADLESS", "true").lower() == "true"
 
     def scrape(self, keywords: list[str], location: str, pages: int) -> list[dict]:
@@ -95,13 +94,13 @@ class JobStreetScraper(BaseScraper):
             )
             page = ctx.new_page()
 
-            # Login if credentials provided
-            if self._email and self._password:
+            # JobStreet uses email-OTP only (no password)
+            if self._email:
                 ok = self._login(page)
                 if not ok:
                     print("[JobStreet] login failed — continuing as guest")
             else:
-                print("[JobStreet] no credentials set — scraping as guest")
+                print("[JobStreet] JOBSTREET_EMAIL not set — scraping as guest")
 
             for keyword in keywords:
                 for pg in range(1, pages + 1):
@@ -119,48 +118,55 @@ class JobStreetScraper(BaseScraper):
         print(f"[JobStreet] total unique jobs found: {len(jobs)}")
         return jobs
 
-    # ── Login ─────────────────────────────────────────────────────────────────
+    # ── Login (email-OTP only — JobStreet has no password) ───────────────────
 
     def _login(self, page) -> bool:
         try:
             page.goto(f"{BASE_URL}/login", wait_until="domcontentloaded", timeout=30000)
             self._sleep(1, 2)
 
-            # Fill credentials
+            # Step 1: enter email and submit
             page.fill('input[type="email"], input[name="email"]', self._email)
-            page.fill('input[type="password"], input[name="password"]', self._password)
-            page.click('button[type="submit"]')
 
-            # Wait for either: home feed, OTP screen, or timeout
+            # Click Continue / Send OTP button
+            page.click(
+                'button[type="submit"], '
+                'button:has-text("Continue"), '
+                'button:has-text("Send OTP"), '
+                'button:has-text("Log in"), '
+                'button:has-text("Sign in")'
+            )
+            print("[JobStreet] email submitted — waiting for OTP screen")
+
+            # Step 2: wait for OTP input to appear
             try:
-                page.wait_for_selector(
-                    f"{_OTP_INPUT}, "
-                    "[data-testid='home-feed'], "
-                    "header[data-automation='header'], "
-                    "nav[aria-label='main'], "
-                    "[class*='Dashboard'], "
-                    "a[href*='/profile']",
-                    timeout=20000,
-                )
+                page.wait_for_selector(_OTP_INPUT, timeout=20000)
             except PWTimeout:
-                print("[JobStreet] post-login wait timed out — assuming logged in")
-                return True
+                # Maybe already logged in (remembered session) or different flow
+                print("[JobStreet] no OTP screen appeared — checking if logged in")
+                return self._check_logged_in(page)
 
-            if self._on_otp_page(page):
-                return self._handle_otp(page)
-
-            print("[JobStreet] logged in successfully")
-            return True
+            # Step 3: ask user for OTP via Telegram
+            return self._handle_otp(page)
 
         except Exception as exc:
             print(f"[JobStreet] login error: {exc}")
             return False
 
-    def _on_otp_page(self, page) -> bool:
-        for sel in _OTP_SIGNALS:
+    def _check_logged_in(self, page) -> bool:
+        """Return True if we appear to be on an authenticated page."""
+        signed_in_signals = [
+            "header[data-automation='header']",
+            "nav[aria-label='main']",
+            "a[href*='/profile']",
+            "[data-automation='account-menu']",
+        ]
+        for sel in signed_in_signals:
             if page.query_selector(sel):
+                print("[JobStreet] session already active — logged in")
                 return True
-        return any(kw in page.url.lower() for kw in ("otp", "verify", "mfa", "2fa"))
+        print("[JobStreet] could not confirm login state")
+        return False
 
     def _handle_otp(self, page) -> bool:
         print("[JobStreet] OTP screen detected — requesting via Telegram")
