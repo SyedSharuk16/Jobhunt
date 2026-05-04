@@ -1,79 +1,105 @@
-"""
-Edit this file to match YOUR resume before running the bot.
-The more detail you add, the better Claude can score job matches.
-"""
+“””
+Yusraa Shifaa — Job Automation Bot Config
+Last updated: May 2026
+“””
 
 # ── YOUR RESUME PROFILE ────────────────────────────────────────────────────────
-# Fill every field. Claude uses this to score every scraped job 0-100.
 
 RESUME = {
-    "name": "Your Name",
+“name”: “Yusraa Shifaa”,
 
-    # The exact job titles you are targeting (drives search queries)
-    "target_titles": [
-        "Software Engineer",
-        "Backend Engineer",
-        "Full Stack Developer",
-    ],
+```
+# The exact job titles you are targeting (drives search queries)
+"target_titles": [
+    "HR Business Partner",
+    "Senior HR Executive",
+    "HR Generalist",
+    "People & Culture Executive",
+    "HR Manager",
+    "L&D Executive",
+],
 
-    # Your core technical skills
-    "skills": [
-        "Python",
-        "FastAPI",
-        "Django",
-        "PostgreSQL",
-        "Redis",
-        "AWS",
-        "Docker",
-        "Git",
-    ],
+# Your core skills
+"skills": [
+    "HR Business Partnering",
+    "Talent Acquisition",
+    "Performance Management",
+    "Employee Relations",
+    "Learning & Development",
+    "Workforce Planning",
+    "Organisational Development",
+    "Job Redesign",
+    "Government Grants (SkillsFuture, WSG, SNEF)",
+    "MOM Compliance",
+    "Employment Act",
+    "Onboarding & Offboarding",
+    "Payroll Processing",
+    "Change Management",
+    "Employee Engagement",
+    "Microsoft Office",
+    "Google Suite",
+    "Canva",
+    "Bilingual English and Tamil",
+],
 
-    # Total years of professional experience
-    "years_experience": 3,
+# Total years of professional experience
+"years_experience": 3,
 
-    # Highest education level
-    "education": "Bachelor of Computer Science",
+# Highest education level
+"education": "Diploma in Human Resource Management with Psychology, Republic Polytechnic (2023)",
 
-    # Industries you prefer (leave empty [] to consider all)
-    "preferred_industries": [
-        "Technology",
-        "FinTech",
-        "E-Commerce",
-    ],
+# Industries you prefer (leave empty [] to consider all)
+"preferred_industries": [
+    "Human Resources",
+    "Professional Services",
+    "Logistics & Supply Chain",
+    "F&B / Hospitality",
+    "Aviation",
+    "Non-Profit / Social Services",
+    "Government / Statutory Boards",
+],
 
-    # Employment type preferences
-    "employment_type": ["Full-Time", "Contract"],
+# Employment type preferences
+"employment_type": ["Full-Time"],
 
-    # Desired monthly salary range in SGD (set to None to ignore)
-    "salary_min_sgd": 4000,
-    "salary_max_sgd": 8000,
+# Desired monthly salary range in SGD
+"salary_min_sgd": 4000,   # ⚠️ Confirm with Yusraa
+"salary_max_sgd": 6500,   # ⚠️ Confirm with Yusraa
 
-    # Brief summary used as context for Claude scoring
-    "summary": (
-        "3-year backend Python developer with experience building REST APIs "
-        "and microservices. Strong in FastAPI, PostgreSQL, AWS. Looking for "
-        "backend or full-stack roles in Singapore tech companies."
-    ),
+# Brief summary used as context for Claude scoring
+"summary": (
+    "HR professional with 3+ years of full-spectrum HR experience covering "
+    "talent acquisition, performance management, employee relations, L&D, "
+    "and government grant administration. Currently operating as HR Business "
+    "Partner across SME and corporate environments. Holds a Diploma in HR "
+    "Management with Psychology. MOM/Employment Act compliant. Bilingual in "
+    "English and Tamil. Based in Singapore, no sponsorship required."
+),
+```
+
 }
 
 # ── SEARCH SETTINGS ────────────────────────────────────────────────────────────
 
-# Keywords sent to each platform's search box.
-# Add synonyms and related titles to cast a wider net.
 SEARCH_KEYWORDS = [
-    "Python developer",
-    "Backend engineer",
-    "Software engineer",
-    "Full stack developer",
+“HR Business Partner”,
+“Senior HR Executive”,
+“HR Generalist”,
+“People and Culture”,
+“Human Resources Manager”,
+“HR Officer”,
+“L&D Executive”,
+“Talent Acquisition”,
+“HR Operations”,
 ]
 
-# Always filter results to Singapore
-LOCATION = "Singapore"
+LOCATION = “Singapore”
 
 # ── PLATFORM TOGGLES ───────────────────────────────────────────────────────────
+
 PLATFORMS = {
-    "mycareers_future": True,   # government portal, free API — recommended
-    "jobstreet":        True,   # requires JOBSTREET_EMAIL / PASSWORD in .env
-    "linkedin":         True,   # requires LINKEDIN_EMAIL / PASSWORD in .env
-    "indeed":           True,   # works without login
+“mycareers_future”: True,   # best for SG HR roles — government portal, free API
+“jobstreet”:        True,   # strong HR listings in SG — requires JOBSTREET_EMAIL / PASSWORD in .env
+“linkedin”:         True,   # requires LINKEDIN_EMAIL / PASSWORD in .env
+“indeed”:           True,   # works without login
 }
