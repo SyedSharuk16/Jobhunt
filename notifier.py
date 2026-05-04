@@ -10,6 +10,7 @@ Setup (one time):
 
 import json
 import os
+import time
 import requests
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -38,6 +39,71 @@ def _send(text: str, parse_mode: str = "HTML") -> bool:
         "parse_mode": parse_mode,
         "disable_web_page_preview": True,
     })
+
+
+def _get_updates(offset: int | None = None, timeout: int = 5) -> list[dict]:
+    """Long-poll Telegram for new messages."""
+    params: dict = {"limit": 20, "timeout": timeout}
+    if offset is not None:
+        params["offset"] = offset
+    try:
+        r = requests.get(f"{API}/getUpdates", params=params,
+                         timeout=timeout + 5)
+        r.raise_for_status()
+        return r.json().get("result", [])
+    except Exception:
+        return []
+
+
+def wait_for_otp(platform: str = "JobStreet", timeout: int = 180) -> str | None:
+    """
+    Alert the user via Telegram that an OTP is needed, then block until
+    they reply with it (or until timeout seconds elapse).
+
+    Returns the OTP string, or None on timeout.
+    """
+    if not BOT_TOKEN or not CHAT_ID:
+        print(f"[Telegram] Cannot request OTP — bot not configured.")
+        return None
+
+    # Drain any old pending updates so we only catch fresh replies
+    existing = _get_updates(timeout=0)
+    offset = existing[-1]["update_id"] + 1 if existing else None
+
+    _send(
+        f"🔐 <b>{platform} needs your OTP</b>\n\n"
+        f"Check your email — an OTP was just sent.\n"
+        f"<b>Reply to this message with the code.</b>\n\n"
+        f"⏳ You have {timeout // 60} minutes."
+    )
+    print(f"[Telegram] Waiting up to {timeout}s for OTP reply…")
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        remaining = int(deadline - time.time())
+        # Use short long-poll windows so we stay responsive
+        poll_secs = min(10, remaining)
+        if poll_secs <= 0:
+            break
+
+        updates = _get_updates(offset=offset, timeout=poll_secs)
+        for update in updates:
+            offset = update["update_id"] + 1
+            msg = update.get("message", {})
+            # Only accept messages from the configured chat
+            if str(msg.get("chat", {}).get("id", "")) != str(CHAT_ID):
+                continue
+            text = msg.get("text", "").strip()
+            # Accept 4–8 digit numeric codes
+            if text.isdigit() and 4 <= len(text) <= 8:
+                _send(f"✅ Got it! Entering OTP <code>{text}</code> now…")
+                return text
+
+    _send(
+        f"⏰ <b>OTP timeout</b> — no code received within {timeout // 60} min.\n"
+        f"{platform} login skipped for today's run."
+    )
+    return None
 
 
 def _send_document(path: str, caption: str = "") -> bool:
