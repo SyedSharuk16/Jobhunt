@@ -11,7 +11,7 @@ on:
       min_score:
         description: 'Minimum match score (0-100)'
         required: false
-        default: '60'
+        default: '40'
       pages:
         description: 'Pages to scrape per keyword'
         required: false
@@ -63,13 +63,13 @@ jobs:
           # Scraper settings
           HEADLESS:     'true'
           SCRAPE_PAGES: ${{ github.event.inputs.pages || '5' }}
-          MIN_SCORE:    ${{ github.event.inputs.min_score || '60' }}
+          MIN_SCORE:    ${{ github.event.inputs.min_score || '40' }}
 
         run: |
           python main.py \
             --notify \
             --pages ${{ github.event.inputs.pages || '5' }} \
-            --min-score ${{ github.event.inputs.min_score || '60' }} \
+            --min-score ${{ github.event.inputs.min_score || '40' }} \
             --csv
 
       # ── 5. Upload report as artifact (viewable in GitHub Actions) ──────────

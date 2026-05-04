@@ -143,12 +143,24 @@ _VERDICT_EMOJI = {
 def notify(jobs: list[dict], stats: dict, report_path: str | None = None) -> None:
     """
     Send the daily digest to Telegram.
-    - One header message with overall stats
-    - Up to 10 individual job cards (strong + good matches first)
-    - Optional: HTML report as a document
+    Always sends a header with scrape stats, then top matches.
     """
+    total_scraped = stats.get("total", 0)
+    by_plat       = stats.get("by_platform", {})
+
+    plat_lines = "\n".join(
+        f"  • {_PLAT_LABEL.get(p, p)}: {n}"
+        for p, n in by_plat.items()
+    ) or "  • No platforms returned results"
+
     if not jobs:
-        _send("🔍 <b>Daily Job Hunt</b>\n\nNo new jobs found today that meet your score threshold.")
+        _send(
+            f"🔍 <b>Daily Job Hunt — Singapore</b>\n\n"
+            f"<b>Jobs scraped:</b> {total_scraped}\n"
+            f"{plat_lines}\n\n"
+            f"⚠️ None met the score threshold today.\n"
+            f"<i>Check GitHub Actions logs for details.</i>"
+        )
         return
 
     strong = [j for j in jobs if isinstance(j.get("score_data_obj"), dict)
@@ -156,18 +168,13 @@ def notify(jobs: list[dict], stats: dict, report_path: str | None = None) -> Non
     good   = [j for j in jobs if isinstance(j.get("score_data_obj"), dict)
               and j["score_data_obj"].get("verdict") == "Good Match"]
 
-    by_plat = stats.get("by_platform", {})
-    plat_lines = "\n".join(
-        f"  • {_PLAT_LABEL.get(p, p)}: {n}"
-        for p, n in by_plat.items()
-    )
-
     header = (
         f"🎯 <b>Daily Job Hunt — Singapore</b>\n\n"
-        f"<b>Jobs scraped today:</b> {stats.get('total', len(jobs))}\n"
+        f"<b>Jobs scraped:</b> {total_scraped}\n"
         f"{plat_lines}\n\n"
         f"🟢 Strong matches: {len(strong)}\n"
-        f"🔵 Good matches:   {len(good)}\n\n"
+        f"🔵 Good matches:   {len(good)}\n"
+        f"📋 Showing top {min(len(jobs), 10)}\n\n"
         f"<i>Top matches below ↓</i>"
     )
     _send(header)
