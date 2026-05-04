@@ -1,45 +1,42 @@
 """
-JobStreet Singapore — Playwright-based scraper with optional login.
-Handles email OTP by requesting the code from the user via Telegram.
+JobStreet Singapore — Playwright scraper.
+Works as guest for public job listings; login unlocks full descriptions.
+OTP is handled via Telegram if triggered during login.
 """
 
 import hashlib
+import importlib
+import json
 import os
 import re
-import sys
-import importlib
+from urllib.parse import quote
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 from .base import BaseScraper
 
 BASE_URL = "https://www.jobstreet.com.sg"
 
-# Selectors that indicate JobStreet is showing an OTP / verification page
+# JobStreet (SEEK) uses data-automation attributes — very stable across redesigns
+_SEL_CARD    = "article[data-job-id], article[data-testid='job-card'], [data-automation='job-card']"
+_SEL_TITLE   = "[data-automation='job-title'], [data-testid='job-title'], h1, h2, h3"
+_SEL_COMPANY = "[data-automation='job-company-name'], [data-testid='company-name'], [class*='company']"
+_SEL_LOC     = "[data-automation='job-card-location'], [data-testid='job-location'], [class*='location']"
+_SEL_SALARY  = "[data-automation='job-card-salary'], [data-testid='salary'], [class*='salary']"
+
 _OTP_SIGNALS = [
     "input[name='otp']",
     "input[placeholder*='OTP']",
-    "input[placeholder*='verification']",
-    "input[placeholder*='code']",
-    "input[aria-label*='OTP']",
-    "input[aria-label*='verification']",
+    "input[placeholder*='verification' i]",
+    "input[placeholder*='code' i]",
+    "input[aria-label*='OTP' i]",
     "[data-testid='otp-input']",
     "input[type='tel'][maxlength='6']",
     "input[type='number'][maxlength='6']",
 ]
-
-# The field we actually type the OTP into (first match wins)
-_OTP_INPUT = ", ".join(_OTP_SIGNALS)
-
-# Submit button after entering OTP
-_OTP_SUBMIT = (
-    "button[type='submit'], "
-    "button:has-text('Verify'), "
-    "button:has-text('Submit'), "
-    "button:has-text('Confirm')"
-)
+_OTP_INPUT  = ", ".join(_OTP_SIGNALS)
+_OTP_SUBMIT = "button[type='submit'], button:has-text('Verify'), button:has-text('Confirm')"
 
 
 def _notifier():
-    """Lazy import to avoid circular dependency."""
     return importlib.import_module("notifier")
 
 
@@ -58,7 +55,8 @@ class JobStreetScraper(BaseScraper):
         with sync_playwright() as pw:
             browser = pw.chromium.launch(
                 headless=self._headless,
-                args=["--disable-blink-features=AutomationControlled"],
+                args=["--disable-blink-features=AutomationControlled",
+                      "--no-sandbox", "--disable-dev-shm-usage"],
             )
             ctx = browser.new_context(
                 user_agent=(
@@ -66,16 +64,17 @@ class JobStreetScraper(BaseScraper):
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
                     "Chrome/120.0.0.0 Safari/537.36"
                 ),
-                viewport={"width": 1280, "height": 800},
+                viewport={"width": 1280, "height": 900},
             )
             page = ctx.new_page()
 
+            # Login if credentials provided
             if self._email and self._password:
-                logged_in = self._login(page)
-                if not logged_in:
-                    print("[JobStreet] login failed — scraping as guest")
+                ok = self._login(page)
+                if not ok:
+                    print("[JobStreet] login failed — continuing as guest")
             else:
-                print("[JobStreet] no credentials — scraping as guest")
+                print("[JobStreet] no credentials set — scraping as guest")
 
             for keyword in keywords:
                 for pg in range(1, pages + 1):
@@ -90,135 +89,180 @@ class JobStreetScraper(BaseScraper):
 
             browser.close()
 
+        print(f"[JobStreet] total unique jobs found: {len(jobs)}")
         return jobs
 
+    # ── Login ─────────────────────────────────────────────────────────────────
+
     def _login(self, page) -> bool:
-        """
-        Attempt login. If JobStreet shows an OTP screen, request the code
-        from the user via Telegram and enter it automatically.
-        Returns True if fully logged in, False otherwise.
-        """
         try:
-            page.goto(f"{BASE_URL}/login", wait_until="networkidle", timeout=30000)
-            page.fill('input[name="email"]', self._email)
-            page.fill('input[name="password"]', self._password)
+            page.goto(f"{BASE_URL}/login", wait_until="domcontentloaded", timeout=30000)
+            self._sleep(1, 2)
+
+            # Fill credentials
+            page.fill('input[type="email"], input[name="email"]', self._email)
+            page.fill('input[type="password"], input[name="password"]', self._password)
             page.click('button[type="submit"]')
 
-            # Wait up to 15 s — either we land on the home feed OR an OTP page
+            # Wait for either: home feed, OTP screen, or timeout
             try:
                 page.wait_for_selector(
-                    f"{_OTP_INPUT}, [data-testid='home-feed'], nav[aria-label='main']",
-                    timeout=15000,
+                    f"{_OTP_INPUT}, "
+                    "[data-testid='home-feed'], "
+                    "header[data-automation='header'], "
+                    "nav[aria-label='main'], "
+                    "[class*='Dashboard'], "
+                    "a[href*='/profile']",
+                    timeout=20000,
                 )
             except PWTimeout:
-                # No OTP page AND no home feed detected — treat as logged in
-                print("[JobStreet] logged in (no OTP required)")
+                print("[JobStreet] post-login wait timed out — assuming logged in")
                 return True
 
-            # Check which state we're in
-            if self._is_otp_page(page):
+            if self._on_otp_page(page):
                 return self._handle_otp(page)
 
-            print("[JobStreet] logged in (no OTP required)")
+            print("[JobStreet] logged in successfully")
             return True
 
-        except PWTimeout:
-            print("[JobStreet] login timed out")
-            return False
         except Exception as exc:
             print(f"[JobStreet] login error: {exc}")
             return False
 
-    def _is_otp_page(self, page) -> bool:
+    def _on_otp_page(self, page) -> bool:
         for sel in _OTP_SIGNALS:
             if page.query_selector(sel):
                 return True
-        url = page.url.lower()
-        return any(kw in url for kw in ("otp", "verify", "mfa", "2fa", "auth"))
+        return any(kw in page.url.lower() for kw in ("otp", "verify", "mfa", "2fa"))
 
     def _handle_otp(self, page) -> bool:
-        """Ask the user for the OTP via Telegram, enter it, submit."""
-        print("[JobStreet] OTP page detected — requesting code via Telegram")
-
+        print("[JobStreet] OTP screen detected — requesting via Telegram")
         otp = _notifier().wait_for_otp(platform="JobStreet", timeout=180)
         if not otp:
-            print("[JobStreet] No OTP received — skipping login")
             return False
-
         try:
-            # Fill the OTP field
-            otp_field = page.wait_for_selector(_OTP_INPUT, timeout=5000)
-            otp_field.click()
-            otp_field.fill(otp)
-
-            # Click the submit / verify button
-            submit = page.query_selector(_OTP_SUBMIT)
-            if submit:
-                submit.click()
+            field = page.wait_for_selector(_OTP_INPUT, timeout=5000)
+            field.fill(otp)
+            btn = page.query_selector(_OTP_SUBMIT)
+            if btn:
+                btn.click()
             else:
-                otp_field.press("Enter")
-
-            # Wait for the OTP page to go away
+                field.press("Enter")
             page.wait_for_selector(
-                f"nav[aria-label='main'], [data-testid='home-feed']",
-                timeout=15000,
+                "header[data-automation='header'], nav[aria-label='main'], a[href*='/profile']",
+                timeout=20000,
             )
-            print("[JobStreet] OTP accepted — logged in")
+            print("[JobStreet] OTP accepted")
             return True
-
-        except PWTimeout:
-            print("[JobStreet] OTP submission timed out")
-            _notifier()._send(
-                "❌ <b>JobStreet OTP failed</b> — the code may have expired or was incorrect.\n"
-                "JobStreet will be scraped as a guest today."
-            )
-            return False
         except Exception as exc:
             print(f"[JobStreet] OTP entry error: {exc}")
+            _notifier()._send("❌ <b>JobStreet OTP failed</b> — continuing as guest.")
             return False
 
+    # ── Scraping ──────────────────────────────────────────────────────────────
+
     def _scrape_page(self, page, keyword: str, location: str, pg: int) -> list[dict]:
-        slug = keyword.replace(" ", "-").lower()
-        url  = f"{BASE_URL}/{slug}-jobs/in-{location.lower()}?pg={pg}"
+        # Use the standard JobStreet /jobs search endpoint
+        url = (
+            f"{BASE_URL}/jobs"
+            f"?q={quote(keyword)}"
+            f"&l={quote(location)}"
+            f"&pg={pg}"
+            f"&sortmode=ListedDate"
+        )
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_selector("article[data-job-id], [data-testid='job-card']",
-                                   timeout=15000)
+            page.wait_for_timeout(2500)  # let React render
         except PWTimeout:
-            print(f"[JobStreet] timeout on page {pg} for '{keyword}'")
+            print(f"[JobStreet] page load timeout '{keyword}' pg {pg}")
             return []
 
-        cards = page.query_selector_all(
-            "article[data-job-id], [data-testid='job-card']"
-        )
+        # Try Next.js data first (fastest, most structured)
+        results = self._from_next_data(page)
+        if results:
+            print(f"[JobStreet] '{keyword}' pg {pg}: {len(results)} via __NEXT_DATA__")
+            return results
+
+        # Fall back to DOM card parsing
+        dom = self._parse_dom(page, keyword, pg)
+        return dom
+
+    def _from_next_data(self, page) -> list[dict]:
+        try:
+            raw = page.evaluate(
+                "() => { const el = document.getElementById('__NEXT_DATA__'); "
+                "return el ? el.textContent : null; }"
+            )
+            if not raw:
+                return []
+            data = json.loads(raw)
+            props = data.get("props", {}).get("pageProps", {})
+
+            # JobStreet / SEEK stores jobs in various locations
+            for path in [
+                ["results"],
+                ["jobs"],
+                ["jobResults", "results"],
+                ["data", "jobs"],
+                ["initialData", "results"],
+            ]:
+                obj = props
+                for key in path:
+                    obj = obj.get(key) if isinstance(obj, dict) else None
+                    if obj is None:
+                        break
+                if isinstance(obj, list) and obj:
+                    return [self._normalise_next(j) for j in obj if j.get("title")]
+
+            return self._deep_find(props)
+        except Exception as exc:
+            print(f"[JobStreet] __NEXT_DATA__ error: {exc}")
+            return []
+
+    def _deep_find(self, obj, depth: int = 0) -> list[dict]:
+        if depth > 5:
+            return []
+        if isinstance(obj, list) and obj and isinstance(obj[0], dict) and "title" in obj[0]:
+            return [self._normalise_next(j) for j in obj if j.get("title")]
+        if isinstance(obj, dict):
+            for v in obj.values():
+                found = self._deep_find(v, depth + 1)
+                if found:
+                    return found
+        return []
+
+    def _parse_dom(self, page, keyword: str, pg: int) -> list[dict]:
         jobs = []
-        for card in cards:
-            job = self._parse_card(card)
-            if job:
-                jobs.append(job)
+        try:
+            cards = page.query_selector_all(_SEL_CARD)
+            if not cards:
+                print(f"[JobStreet] no cards found for '{keyword}' pg {pg}")
+                return []
+            print(f"[JobStreet] '{keyword}' pg {pg}: {len(cards)} cards via DOM")
+            for card in cards:
+                job = self._parse_card(card)
+                if job:
+                    jobs.append(job)
+        except Exception as exc:
+            print(f"[JobStreet] DOM parse error: {exc}")
         return jobs
 
     def _parse_card(self, card) -> dict | None:
         try:
-            jid = (
-                card.get_attribute("data-job-id")
-                or card.get_attribute("data-testid")
-                or ""
-            )
-            title   = self._text(card, "h1,h2,h3,[data-testid='job-title']")
-            company = self._text(card, "[data-testid='company-name'], .company-name")
-            loc     = self._text(card, "[data-testid='job-location'], .location")
-            salary  = self._text(card, "[data-testid='salary'], .salary-range")
-            desc    = self._text(card, "[data-testid='job-description'], .job-description")
-            href    = card.query_selector("a")
-            url     = href.get_attribute("href") if href else ""
-            if url and not url.startswith("http"):
-                url = BASE_URL + url
-
+            title   = self._text(card, _SEL_TITLE)
             if not title:
                 return None
+            company = self._text(card, _SEL_COMPANY)
+            loc     = self._text(card, _SEL_LOC)
+            salary  = self._text(card, _SEL_SALARY)
 
-            raw_id = jid or f"{title}{company}"
+            jid_attr = card.get_attribute("data-job-id") or ""
+            link_el  = card.query_selector("a[href*='/job/'], a[href*='jobstreet']")
+            href     = link_el.get_attribute("href") if link_el else ""
+            if href and not href.startswith("http"):
+                href = BASE_URL + href
+
+            raw_id = jid_attr or f"{title}{company}"
             return {
                 "id":          f"js_{hashlib.md5(raw_id.encode()).hexdigest()[:16]}",
                 "platform":    self.name,
@@ -226,12 +270,50 @@ class JobStreetScraper(BaseScraper):
                 "company":     company,
                 "location":    loc or "Singapore",
                 "salary":      salary,
-                "description": desc[:4000],
-                "url":         url,
+                "description": "",
+                "url":         href,
                 "posted_at":   "",
             }
         except Exception:
             return None
+
+    def _normalise_next(self, raw: dict) -> dict:
+        salary = raw.get("salary", {}) or {}
+        sal_str = ""
+        if isinstance(salary, dict):
+            lo, hi = salary.get("minimum") or salary.get("min"), salary.get("maximum") or salary.get("max")
+            if lo and hi:
+                sal_str = f"SGD {lo:,} - {hi:,} / month"
+            elif lo:
+                sal_str = f"SGD {lo:,}+ / month"
+        elif isinstance(salary, str):
+            sal_str = salary
+
+        job_id = str(raw.get("id") or raw.get("jobId") or "")
+        title  = raw.get("title") or raw.get("jobTitle") or ""
+        company = (
+            raw.get("advertiser", {}).get("description")
+            or raw.get("companyName")
+            or raw.get("company")
+            or ""
+        )
+        url = raw.get("jobUrl") or (f"{BASE_URL}/job/{job_id}" if job_id else "")
+
+        desc = raw.get("teaser") or raw.get("description") or ""
+        desc = re.sub(r"<[^>]+>", " ", desc).strip()
+
+        raw_id = job_id or f"{title}{company}"
+        return {
+            "id":          f"js_{hashlib.md5(raw_id.encode()).hexdigest()[:16]}",
+            "platform":    self.name,
+            "title":       title,
+            "company":     company,
+            "location":    raw.get("jobLocation", {}).get("label") or "Singapore",
+            "salary":      sal_str,
+            "description": desc[:4000],
+            "url":         url,
+            "posted_at":   raw.get("listingDate") or raw.get("postedAt") or "",
+        }
 
     @staticmethod
     def _text(el, selector: str) -> str:
