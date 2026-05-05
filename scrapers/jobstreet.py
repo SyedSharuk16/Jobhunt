@@ -15,7 +15,6 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 from .base import BaseScraper
 
 BASE_URL  = "https://sg.jobstreet.com"
-# Real login entry point — shows "Continue with Google" + email sign-in option
 LOGIN_URL = "https://sg.jobstreet.com/oauth/login?returnUrl=%2F"
 
 # ── OTP input detection ───────────────────────────────────────────────────────
@@ -39,30 +38,7 @@ _OTP_SUBMIT = (
     "button:has-text('Continue')"
 )
 
-# Email field (appears after clicking "sign in with email")
-_EMAIL_INPUT = (
-    "input[type='email'], "
-    "input[name='email'], "
-    "input[name='emailAddress'], "
-    "input[data-automation='email'], "
-    "input[placeholder*='email' i]"
-)
-
-# "Sign in with email" link/button on the OAuth page
-_EMAIL_SIGNIN_SELECTORS = [
-    "a:has-text('email')",
-    "button:has-text('email')",
-    "a:has-text('Sign in with email')",
-    "button:has-text('Sign in with email')",
-    "a:has-text('Use email')",
-    "button:has-text('Use email')",
-    "a:has-text('Continue with email')",
-    "button:has-text('Continue with email')",
-    "[data-testid*='email']",
-    "a[href*='email']",
-]
-
-# Submit email / "Send OTP" button
+# Continue / send OTP button after email is entered
 _CONTINUE_BTN = (
     "button[data-automation='sign-in-btn'], "
     "button[type='submit'], "
@@ -72,6 +48,20 @@ _CONTINUE_BTN = (
     "button:has-text('Log in'), "
     "button:has-text('Sign in')"
 )
+
+# Selectors for the "sign in with email" link on the OAuth page.
+# Ordered from most specific to least specific.
+# NOTE: intentionally excludes a[href*='email'] which is too broad
+#       and can match mailto: or unrelated links.
+_EMAIL_OPTION_TEXTS = [
+    "sign in with email",
+    "use email",
+    "continue with email",
+    "email address",
+    "email instead",
+    "use your email",
+    "email",   # last resort — short text match
+]
 
 
 def _notifier():
@@ -136,62 +126,106 @@ class JobStreetScraper(BaseScraper):
             self._sleep(2, 3)
             print(f"[JobStreet] login page loaded: {page.url}")
 
-            # The OAuth page shows "Continue with Google" + an email option.
-            # Try to find and click the "sign in with email" alternative.
-            clicked_email_option = False
-            for sel in _EMAIL_SIGNIN_SELECTORS:
-                try:
-                    el = page.query_selector(sel)
-                    if el and el.is_visible():
-                        print(f"[JobStreet] clicking email sign-in option: {sel}")
-                        el.click()
-                        self._sleep(1.5, 2.5)
-                        clicked_email_option = True
-                        break
-                except Exception:
-                    continue
+            # Screenshot for debugging (uploaded as GitHub Actions artifact)
+            self._save_screenshot(page, "login_step1_oauth_page")
 
-            if not clicked_email_option:
-                # Dump visible links/buttons for debugging
-                visible_text = page.evaluate("""
-                () => Array.from(document.querySelectorAll('a, button'))
-                    .map(el => el.textContent.trim())
-                    .filter(t => t.length > 1 && t.length < 60)
-                    .slice(0, 20)
-                """)
-                print(f"[JobStreet] could not find email option. Page elements: {visible_text}")
-                # Still try to find email field directly (some pages show it without extra click)
+            # Log all clickable elements so we can diagnose selector mismatches
+            self._log_interactive_elements(page)
 
-            # Wait for email input to appear
-            try:
-                page.wait_for_selector(_EMAIL_INPUT, timeout=15000)
-            except PWTimeout:
-                print("[JobStreet] email input not found after clicking email option")
+            # Step 1: find and click the "sign in with email" option
+            clicked = self._click_email_option(page)
+            if clicked:
+                self._sleep(2, 3)
+                print(f"[JobStreet] after email option click, URL: {page.url}")
+                self._save_screenshot(page, "login_step2_after_email_click")
+                self._log_interactive_elements(page)
+
+            # Step 2: fill the email input — use element handle to avoid re-search timeout
+            email_el = self._find_email_input(page)
+            if email_el is None:
+                print("[JobStreet] email input still not visible — aborting login")
                 return self._is_logged_in(page)
 
-            page.fill(_EMAIL_INPUT, self._email)
-            print(f"[JobStreet] email entered: {self._email}")
+            email_el.fill(self._email)
+            print(f"[JobStreet] email entered ({self._email})")
+            self._save_screenshot(page, "login_step3_email_filled")
 
-            # Click continue / send OTP
+            # Step 3: click continue / send OTP
             try:
                 page.click(_CONTINUE_BTN, timeout=10000)
                 print("[JobStreet] submitted email — waiting for OTP screen")
             except PWTimeout:
-                print("[JobStreet] could not click continue button")
+                print("[JobStreet] could not find/click continue button")
+                self._save_screenshot(page, "login_step3_no_continue_btn")
                 return False
 
-            # Wait for OTP input field
+            self._sleep(2, 3)
+            self._save_screenshot(page, "login_step4_post_submit")
+
+            # Step 4: wait for OTP field
             try:
                 page.wait_for_selector(_OTP_INPUT, timeout=30000)
             except PWTimeout:
-                print("[JobStreet] no OTP screen appeared — checking login state")
+                print("[JobStreet] no OTP screen — checking login state")
+                self._log_interactive_elements(page)
                 return self._is_logged_in(page)
 
             return self._handle_otp(page)
 
         except Exception as exc:
             print(f"[JobStreet] login error: {exc}")
+            self._save_screenshot(page, "login_error")
             return False
+
+    def _click_email_option(self, page) -> bool:
+        """Find and click the 'sign in with email' link on the OAuth page."""
+        for text in _EMAIL_OPTION_TEXTS:
+            # Try both <a> and <button> with exact case-insensitive text match
+            for tag in ("a", "button", "span", "div"):
+                try:
+                    # Playwright :has-text matches if element contains the text
+                    sel = f"{tag}:has-text('{text}')"
+                    el  = page.query_selector(sel)
+                    if el and el.is_visible():
+                        label = el.inner_text().strip()
+                        # Skip if text is too long (avoid matching paragraphs of text)
+                        if len(label) > 60:
+                            continue
+                        print(f"[JobStreet] clicking email option [{tag}] text='{label}'")
+                        el.click()
+                        return True
+                except Exception:
+                    continue
+        print("[JobStreet] no 'sign in with email' option found on page")
+        return False
+
+    def _find_email_input(self, page) -> object | None:
+        """Return a visible email input element handle, or None."""
+        selectors = [
+            "input[type='email']",
+            "input[name='email']",
+            "input[name='emailAddress']",
+            "input[data-automation='email']",
+            "input[data-automation='emailAddress']",
+            "input[data-testid='email']",
+            "input[data-testid='emailAddress']",
+            "input[placeholder*='email' i]",
+            "input[aria-label*='email' i]",
+            # Broad fallback: any visible text/email input that isn't a search box
+            "input[type='text']:not([role='combobox']):not([placeholder*='search' i])",
+        ]
+        # Give the page up to 15 s to show the email field
+        for sel in selectors:
+            try:
+                el = page.wait_for_selector(sel, timeout=15000, state="visible")
+                if el:
+                    print(f"[JobStreet] found email input with selector: {sel}")
+                    return el
+            except PWTimeout:
+                continue
+            except Exception:
+                continue
+        return None
 
     def _is_logged_in(self, page) -> bool:
         for sel in [
@@ -222,8 +256,7 @@ class JobStreetScraper(BaseScraper):
             page.wait_for_selector(
                 "[data-automation='account-menu'], "
                 "header[data-automation='header'], "
-                "a[href*='/profile'], "
-                "[data-testid='account-menu']",
+                "a[href*='/profile']",
                 timeout=25000,
             )
             print("[JobStreet] OTP accepted — logged in")
@@ -232,6 +265,44 @@ class JobStreetScraper(BaseScraper):
             print(f"[JobStreet] OTP entry error: {exc}")
             _notifier()._send("❌ <b>JobStreet OTP failed</b> — continuing as guest.")
             return False
+
+    # ── Debug helpers ─────────────────────────────────────────────────────────
+
+    def _save_screenshot(self, page, label: str) -> None:
+        try:
+            os.makedirs("reports", exist_ok=True)
+            path = f"reports/jobstreet_{label}.png"
+            page.screenshot(path=path, full_page=False)
+            print(f"[JobStreet] screenshot → {path}")
+        except Exception as exc:
+            print(f"[JobStreet] screenshot failed: {exc}")
+
+    def _log_interactive_elements(self, page) -> None:
+        try:
+            items = page.evaluate("""
+            () => {
+                const els = document.querySelectorAll('a, button, input, [role="button"]');
+                return Array.from(els)
+                    .filter(e => {
+                        const r = e.getBoundingClientRect();
+                        return r.width > 0 && r.height > 0;
+                    })
+                    .map(e => ({
+                        tag:  e.tagName,
+                        type: e.type || '',
+                        text: (e.textContent || e.value || e.placeholder || '').trim().slice(0, 60),
+                        href: (e.href || '').slice(0, 80),
+                    }))
+                    .filter(e => e.text || e.href)
+                    .slice(0, 30);
+            }
+            """)
+            print(f"[JobStreet] visible interactive elements ({len(items)}):")
+            for it in items:
+                print(f"  <{it['tag'].lower()}> type={it['type']!r} "
+                      f"text={it['text']!r} href={it['href']!r}")
+        except Exception as exc:
+            print(f"[JobStreet] element log failed: {exc}")
 
     # ── Scraping ──────────────────────────────────────────────────────────────
 
@@ -246,7 +317,6 @@ class JobStreetScraper(BaseScraper):
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(3000)
-            # Scroll to load lazy cards
             page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
             page.wait_for_timeout(1500)
         except PWTimeout:
@@ -256,25 +326,20 @@ class JobStreetScraper(BaseScraper):
         landed = page.url
         print(f"[JobStreet] '{keyword}' pg {pg} — landed: {landed[:100]}")
 
-        # If we got bounced to homepage, log page title and bail
         if "/jobs" not in landed and "q=" not in landed:
-            title = page.title()
-            print(f"[JobStreet] redirected away from search (title: {title!r}) — skipping")
+            print(f"[JobStreet] redirected away from search — skipping")
             return []
 
-        # Primary: JavaScript-based extraction (survives redesigns)
         jobs = self._extract_via_js(page)
         if jobs:
             print(f"[JobStreet] '{keyword}' pg {pg}: {len(jobs)} jobs via JS")
             return jobs
 
-        # Fallback: __NEXT_DATA__
         jobs = self._from_next_data(page)
         if jobs:
             print(f"[JobStreet] '{keyword}' pg {pg}: {len(jobs)} jobs via __NEXT_DATA__")
             return jobs
 
-        # Debug: dump what cards we can see
         card_counts = page.evaluate("""
         () => {
             const sels = [
