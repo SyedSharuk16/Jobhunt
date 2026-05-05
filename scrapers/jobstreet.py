@@ -1,7 +1,8 @@
 """
 JobStreet Singapore — Playwright scraper.
 Real domain is sg.jobstreet.com (SEEK platform).
-Login is email-OTP only; OTP is requested via Telegram.
+Login uses email-OTP: clicks "Sign in with email" on the OAuth page,
+submits the email address, then waits for OTP via Telegram.
 """
 
 import hashlib
@@ -13,10 +14,11 @@ from urllib.parse import quote
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 from .base import BaseScraper
 
-# sg.jobstreet.com is the real domain (www.jobstreet.com.sg redirects here)
-BASE_URL   = "https://sg.jobstreet.com"
-LOGIN_URL  = "https://sg.jobstreet.com/login"
+BASE_URL  = "https://sg.jobstreet.com"
+# Real login entry point — shows "Continue with Google" + email sign-in option
+LOGIN_URL = "https://sg.jobstreet.com/oauth/login?returnUrl=%2F"
 
+# ── OTP input detection ───────────────────────────────────────────────────────
 _OTP_SIGNALS = [
     "input[name='otp']",
     "input[placeholder*='OTP' i]",
@@ -26,16 +28,18 @@ _OTP_SIGNALS = [
     "[data-testid='otp-input']",
     "input[type='tel'][maxlength='6']",
     "input[type='number'][maxlength='6']",
+    "input[autocomplete='one-time-code']",
 ]
 _OTP_INPUT  = ", ".join(_OTP_SIGNALS)
 _OTP_SUBMIT = (
     "button[type='submit'], "
     "button:has-text('Verify'), "
     "button:has-text('Confirm'), "
-    "button:has-text('Submit')"
+    "button:has-text('Submit'), "
+    "button:has-text('Continue')"
 )
 
-# Email input selectors for login page
+# Email field (appears after clicking "sign in with email")
 _EMAIL_INPUT = (
     "input[type='email'], "
     "input[name='email'], "
@@ -44,15 +48,29 @@ _EMAIL_INPUT = (
     "input[placeholder*='email' i]"
 )
 
-# Continue / send OTP button on login page
+# "Sign in with email" link/button on the OAuth page
+_EMAIL_SIGNIN_SELECTORS = [
+    "a:has-text('email')",
+    "button:has-text('email')",
+    "a:has-text('Sign in with email')",
+    "button:has-text('Sign in with email')",
+    "a:has-text('Use email')",
+    "button:has-text('Use email')",
+    "a:has-text('Continue with email')",
+    "button:has-text('Continue with email')",
+    "[data-testid*='email']",
+    "a[href*='email']",
+]
+
+# Submit email / "Send OTP" button
 _CONTINUE_BTN = (
     "button[data-automation='sign-in-btn'], "
     "button[type='submit'], "
     "button:has-text('Continue'), "
-    "button:has-text('Send OTP'), "
+    "button:has-text('Send'), "
+    "button:has-text('Next'), "
     "button:has-text('Log in'), "
-    "button:has-text('Sign in'), "
-    "button:has-text('Next')"
+    "button:has-text('Sign in')"
 )
 
 
@@ -116,25 +134,57 @@ class JobStreetScraper(BaseScraper):
         try:
             page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
             self._sleep(2, 3)
-            print(f"[JobStreet] login page: {page.url}")
+            print(f"[JobStreet] login page loaded: {page.url}")
 
-            # Fill email
+            # The OAuth page shows "Continue with Google" + an email option.
+            # Try to find and click the "sign in with email" alternative.
+            clicked_email_option = False
+            for sel in _EMAIL_SIGNIN_SELECTORS:
+                try:
+                    el = page.query_selector(sel)
+                    if el and el.is_visible():
+                        print(f"[JobStreet] clicking email sign-in option: {sel}")
+                        el.click()
+                        self._sleep(1.5, 2.5)
+                        clicked_email_option = True
+                        break
+                except Exception:
+                    continue
+
+            if not clicked_email_option:
+                # Dump visible links/buttons for debugging
+                visible_text = page.evaluate("""
+                () => Array.from(document.querySelectorAll('a, button'))
+                    .map(el => el.textContent.trim())
+                    .filter(t => t.length > 1 && t.length < 60)
+                    .slice(0, 20)
+                """)
+                print(f"[JobStreet] could not find email option. Page elements: {visible_text}")
+                # Still try to find email field directly (some pages show it without extra click)
+
+            # Wait for email input to appear
             try:
                 page.wait_for_selector(_EMAIL_INPUT, timeout=15000)
-                page.fill(_EMAIL_INPUT, self._email)
             except PWTimeout:
-                print("[JobStreet] email field not found — login page may have changed")
+                print("[JobStreet] email input not found after clicking email option")
+                return self._is_logged_in(page)
+
+            page.fill(_EMAIL_INPUT, self._email)
+            print(f"[JobStreet] email entered: {self._email}")
+
+            # Click continue / send OTP
+            try:
+                page.click(_CONTINUE_BTN, timeout=10000)
+                print("[JobStreet] submitted email — waiting for OTP screen")
+            except PWTimeout:
+                print("[JobStreet] could not click continue button")
                 return False
 
-            # Click continue
-            page.click(_CONTINUE_BTN)
-            print("[JobStreet] email submitted — waiting for OTP screen")
-
-            # Wait for OTP input
+            # Wait for OTP input field
             try:
-                page.wait_for_selector(_OTP_INPUT, timeout=25000)
+                page.wait_for_selector(_OTP_INPUT, timeout=30000)
             except PWTimeout:
-                print("[JobStreet] no OTP screen — checking if already logged in")
+                print("[JobStreet] no OTP screen appeared — checking login state")
                 return self._is_logged_in(page)
 
             return self._handle_otp(page)
@@ -149,6 +199,7 @@ class JobStreetScraper(BaseScraper):
             "header[data-automation='header']",
             "a[href*='/profile']",
             "button[aria-label*='account' i]",
+            "[data-testid='account-menu']",
         ]:
             if page.query_selector(sel):
                 print("[JobStreet] already logged in")
@@ -168,9 +219,11 @@ class JobStreetScraper(BaseScraper):
                 btn.click()
             else:
                 field.press("Enter")
-            # Wait for authenticated header to confirm login
             page.wait_for_selector(
-                "[data-automation='account-menu'], header[data-automation='header'], a[href*='/profile']",
+                "[data-automation='account-menu'], "
+                "header[data-automation='header'], "
+                "a[href*='/profile'], "
+                "[data-testid='account-menu']",
                 timeout=25000,
             )
             print("[JobStreet] OTP accepted — logged in")
@@ -183,7 +236,6 @@ class JobStreetScraper(BaseScraper):
     # ── Scraping ──────────────────────────────────────────────────────────────
 
     def _scrape_page(self, page, keyword: str, pg: int) -> list[dict]:
-        # sg.jobstreet.com uses SEEK's URL format: where= and page=
         url = (
             f"{BASE_URL}/jobs"
             f"?q={quote(keyword)}"
@@ -194,38 +246,54 @@ class JobStreetScraper(BaseScraper):
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(3000)
-            # Scroll to trigger lazy-loaded cards
+            # Scroll to load lazy cards
             page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
             page.wait_for_timeout(1500)
         except PWTimeout:
-            print(f"[JobStreet] timeout '{keyword}' pg {pg}")
+            print(f"[JobStreet] timeout loading '{keyword}' pg {pg}")
             return []
 
-        print(f"[JobStreet] '{keyword}' pg {pg} — url: {page.url[:90]}")
+        landed = page.url
+        print(f"[JobStreet] '{keyword}' pg {pg} — landed: {landed[:100]}")
 
-        # Use JavaScript to extract all job data — most reliable approach
+        # If we got bounced to homepage, log page title and bail
+        if "/jobs" not in landed and "q=" not in landed:
+            title = page.title()
+            print(f"[JobStreet] redirected away from search (title: {title!r}) — skipping")
+            return []
+
+        # Primary: JavaScript-based extraction (survives redesigns)
         jobs = self._extract_via_js(page)
         if jobs:
             print(f"[JobStreet] '{keyword}' pg {pg}: {len(jobs)} jobs via JS")
             return jobs
 
-        # Fallback: try __NEXT_DATA__
+        # Fallback: __NEXT_DATA__
         jobs = self._from_next_data(page)
         if jobs:
             print(f"[JobStreet] '{keyword}' pg {pg}: {len(jobs)} jobs via __NEXT_DATA__")
             return jobs
 
-        print(f"[JobStreet] '{keyword}' pg {pg}: 0 jobs found")
+        # Debug: dump what cards we can see
+        card_counts = page.evaluate("""
+        () => {
+            const sels = [
+                '[data-automation="job-card"]',
+                'article[data-job-id]',
+                '[data-card-type="JobCard"]',
+                'article[data-testid="job-card"]',
+                'article',
+                '[data-testid*="job"]',
+            ];
+            return sels.map(s => s + ':' + document.querySelectorAll(s).length);
+        }
+        """)
+        print(f"[JobStreet] '{keyword}' pg {pg}: 0 jobs — card counts: {card_counts}")
         return []
 
     def _extract_via_js(self, page) -> list[dict]:
-        """
-        Run JavaScript in the browser to extract job cards.
-        Tries many selector variants so it survives SEEK redesigns.
-        """
         raw = page.evaluate("""
         () => {
-            // Find all job card containers
             const cardSels = [
                 '[data-automation="job-card"]',
                 'article[data-job-id]',
@@ -240,7 +308,6 @@ class JobStreetScraper(BaseScraper):
             if (!cards.length) return [];
 
             return cards.map(card => {
-                // Title — try every known SEEK/JobStreet variant
                 const titleEl = (
                     card.querySelector('[data-automation="job-title"]') ||
                     card.querySelector('a[data-automation="jobcard-link"]') ||
@@ -252,7 +319,6 @@ class JobStreetScraper(BaseScraper):
                 const title = titleEl ? titleEl.textContent.trim() : '';
                 if (!title) return null;
 
-                // Company
                 const compEl = (
                     card.querySelector('[data-automation="job-company-name"]') ||
                     card.querySelector('[data-automation="advertiser-name"]') ||
@@ -261,27 +327,24 @@ class JobStreetScraper(BaseScraper):
                     card.querySelector('[class*="company" i]')
                 );
 
-                // Location
                 const locEl = (
                     card.querySelector('[data-automation="job-card-location"]') ||
                     card.querySelector('[data-automation="job-location"]') ||
                     card.querySelector('[data-testid="job-location"]')
                 );
 
-                // Salary
                 const salEl = (
                     card.querySelector('[data-automation="job-card-salary"]') ||
                     card.querySelector('[data-automation="job-salary"]') ||
                     card.querySelector('[data-testid="salary"]')
                 );
 
-                // URL
                 const linkEl = (
                     card.querySelector('a[data-automation="jobcard-link"]') ||
                     card.querySelector('a[href*="/job/"]') ||
                     card.querySelector('a[href*="jobstreet"]')
                 );
-                const href = linkEl ? linkEl.href : '';
+                const href  = linkEl ? linkEl.href : '';
                 const jobId = card.getAttribute('data-job-id') || '';
 
                 return {
